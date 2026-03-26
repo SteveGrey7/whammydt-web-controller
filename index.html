@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Whammy DT MIDI Controller</title>
+
+<style>
+body { background:#111; color:white; font-family:Arial; text-align:center; }
+.topbar { margin:15px; }
+select { padding:5px; margin:5px; }
+
+.container { display:flex; justify-content:center; gap:40px; }
+
+.block {
+  background:#1b1b1b;
+  padding:15px;
+  border-radius:10px;
+  border:2px solid #444;
+}
+
+/* HOTKEYS */
+.hotkey-block {
+  margin:30px auto;
+  max-width:900px;
+  position:relative;
+  transition:0.3s;
+}
+.hotkey-block.editing { background:#2a2a2a; }
+
+.edit-btn {
+  position:absolute;
+  top:10px;
+  right:10px;
+  background:#444;
+}
+.edit-btn.active {
+  background:#ffd966;
+  color:black;
+}
+
+.slots {
+  display:grid;
+  grid-template-columns:repeat(4,1fr);
+  gap:10px;
+  margin-top:30px;
+}
+
+.slot {
+  border:2px solid #555;
+  padding:10px;
+  border-radius:8px;
+  transition:0.2s;
+}
+.slot.active { border-color:#ffd966; }
+
+.slot:hover {
+  background:#3a4a5a;
+}
+
+.slot-name { min-height:20px; }
+
+.key-input {
+  width:80%;
+  text-align:center;
+  background:#222;
+  color:white;
+  border:none;
+  padding:5px;
+}
+.key-input:disabled { opacity:0.5; }
+
+/* hover linked buttons */
+.hover-linked {
+  background:#3a4a5a !important;
+}
+
+/* LEFT */
+.row {
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  gap:10px;
+  margin:4px 0;
+}
+.label-left { width:140px; text-align:right; }
+.btn-line { display:flex; gap:5px; }
+
+/* BUTTONS */
+button {
+  background:#333;
+  color:white;
+  border:none;
+  padding:6px 10px;
+  border-radius:5px;
+  cursor:pointer;
+}
+.off { background:#555; }
+
+.active-label { color:#ff6b6b; }
+.active-btn { color:#ffd966; }
+
+/* DROP */
+.grid {
+  display:flex;
+  gap:10px;
+  justify-content:center;
+}
+.grid-col {
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  gap:5px;
+}
+.label-top { margin-bottom:5px; }
+.label-bottom { margin-top:5px; }
+
+/* WARNING */
+#warning {
+  opacity:0;
+  transform:translateY(10px);
+  max-width:500px;
+  margin:30px auto 0;
+  color:#aaa;
+  transition:0.5s;
+}
+#warning.show {
+  opacity:1;
+  transform:translateY(0);
+}
+#warning span { color:#ff6b6b; }
+
+.footer {
+  margin-top:20px;
+  color:#777;
+  font-size:12px;
+  transition:0.5s;
+}
+.footer.shift { transform:translateY(10px); }
+
+.dual { display:flex; gap:30px; }
+</style>
+</head>
+
+<body>
+
+<h2>Whammy DT MIDI Controller</h2>
+
+<div class="topbar">
+MIDI Device:
+<select id="midiOutput"></select>
+
+Channel:
+<select id="channel">
+<option value="omni">Omni</option>
+<script>
+for(let i=0;i<16;i++){
+document.write(`<option value="${i}">${i+1}</option>`)
+}
+</script>
+</select>
+</div>
+
+<div class="container">
+
+<div class="block">
+<div class="dual">
+<div><h3>HARMONY</h3><div id="harmony"></div></div>
+<div><h3>WHAMMY</h3><div id="whammy"></div></div>
+</div>
+</div>
+
+<div class="block">
+<h3>DROP</h3>
+<div id="dropUp"></div>
+<br>
+<div id="dropDown"></div>
+</div>
+
+</div>
+
+<div id="hotkeys" class="block hotkey-block">
+<button id="editBtn" class="edit-btn">EDIT</button>
+<h3>HOTKEYS</h3>
+<div class="slots" id="slots"></div>
+</div>
+
+<div id="warning">
+<span>Красный</span> — отображает последнюю активацию. Не синхронизируется с устройством
+</div>
+
+<div id="footer" class="footer">
+Идея — SteveGrey • Реализация — ChatGPT
+</div>
+
+<script>
+let midiAccess, outputs=[];
+let activeWhammy=null, activeDrop=null;
+let activeWhammyBtn=null, activeDropBtn=null;
+let warningShown=false;
+
+let pcMap = {};
+
+function registerButton(btn, pc){
+  if(!pcMap[pc]) pcMap[pc]=[];
+  pcMap[pc].push(btn);
+}
+
+/* HOTKEY */
+let editing=false;
+let selectedSlot=null;
+let activeInputIndex=null;
+
+let slots = Array(8).fill(null).map(()=>({label:"",pc:null,key:""}));
+
+navigator.requestMIDIAccess().then(a=>{
+midiAccess=a;
+updateDevices();
+});
+
+function updateDevices(){
+let sel=document.getElementById("midiOutput");
+outputs=Array.from(midiAccess.outputs.values());
+outputs.forEach((o,i)=>{
+let opt=document.createElement("option");
+opt.value=i;
+opt.text=o.name;
+sel.add(opt);
+});
+}
+
+function getOut(){
+return outputs[document.getElementById("midiOutput").value];
+}
+
+function send(pc){
+let out=getOut();
+if(!out) return;
+
+let ch=document.getElementById("channel").value;
+if(ch==="omni"){
+for(let i=0;i<16;i++) out.send([0xC0+i,pc]);
+}else{
+out.send([0xC0+parseInt(ch),pc]);
+}
+}
+
+/* VISUAL */
+function showWarning(){
+if(!warningShown){
+document.getElementById("warning").classList.add("show");
+document.getElementById("footer").classList.add("shift");
+warningShown=true;
+}
+}
+
+function setActiveWhammy(label){
+if(activeWhammy) activeWhammy.classList.remove("active-label");
+label.classList.add("active-label");
+activeWhammy=label;
+showWarning();
+}
+
+function setActiveDrop(label){
+if(activeDrop) activeDrop.classList.remove("active-label");
+label.classList.add("active-label");
+activeDrop=label;
+showWarning();
+}
+
+function setActiveBtn(btn,type){
+if(type==="whammy"){
+if(activeWhammyBtn) activeWhammyBtn.classList.remove("active-btn");
+activeWhammyBtn=btn;
+}else{
+if(activeDropBtn) activeDropBtn.classList.remove("active-btn");
+activeDropBtn=btn;
+}
+btn.classList.add("active-btn");
+}
+
+/* HOTKEY UI */
+function buildSlots(){
+let c=document.getElementById("slots");
+c.innerHTML="";
+
+slots.forEach((s,i)=>{
+let div=document.createElement("div");
+div.className="slot";
+if(selectedSlot===i) div.classList.add("active");
+
+div.onclick=()=>{
+if(!editing) return;
+selectedSlot=i;
+buildSlots();
+};
+
+div.onmouseenter=()=>{
+  let pc = slots[i].pc;
+  if(pcMap[pc]){
+    pcMap[pc].forEach(b=>b.classList.add("hover-linked"));
+  }
+};
+
+div.onmouseleave=()=>{
+  let pc = slots[i].pc;
+  if(pcMap[pc]){
+    pcMap[pc].forEach(b=>b.classList.remove("hover-linked"));
+  }
+};
+
+let name=document.createElement("div");
+name.className="slot-name";
+name.innerText=s.label || "—";
+
+let input=document.createElement("input");
+input.className="key-input";
+input.value=s.key;
+input.disabled=!editing;
+
+input.onclick=(e)=>{
+if(!editing) return;
+e.stopPropagation();
+activeInputIndex=i;
+};
+
+div.appendChild(name);
+div.appendChild(input);
+c.appendChild(div);
+});
+}
+
+document.addEventListener("keydown",(e)=>{
+if(editing){
+if(activeInputIndex!==null){
+e.preventDefault();
+slots[activeInputIndex].key=e.key;
+activeInputIndex=null;
+buildSlots();
+}
+return;
+}
+
+slots.forEach(s=>{
+if(s.key===e.key && s.pc!==null){
+send(s.pc);
+}
+});
+});
+
+document.getElementById("editBtn").onclick=()=>{
+editing=!editing;
+selectedSlot=null;
+activeInputIndex=null;
+
+document.getElementById("hotkeys").classList.toggle("editing",editing);
+document.getElementById("editBtn").classList.toggle("active",editing);
+
+buildSlots();
+};
+
+/* ASSIGN */
+function assignSlot(label,pc){
+if(!editing || selectedSlot===null) return;
+slots[selectedSlot]={...slots[selectedSlot],label,pc};
+buildSlots();
+}
+
+/* LEFT */
+function createLeft(data){
+let c=document.createElement("div");
+
+data.forEach(d=>{
+let row=document.createElement("div");
+row.className="row";
+
+let label=document.createElement("div");
+label.className="label-left";
+label.innerText=d.label;
+
+let on=document.createElement("button");
+on.innerText="вкл";
+on.dataset.pc = d.on;
+registerButton(on, d.on);
+
+on.onclick=()=>{
+send(d.on);
+setActiveWhammy(label);
+setActiveBtn(on,"whammy");
+assignSlot(d.label+" (вкл)",d.on);
+};
+
+let off=document.createElement("button");
+off.innerText="выкл";
+off.className="off";
+off.dataset.pc = d.off;
+registerButton(off, d.off);
+
+off.onclick=()=>{
+send(d.off);
+setActiveWhammy(label);
+setActiveBtn(off,"whammy");
+assignSlot(d.label+" (выкл)",d.off);
+};
+
+let btns=document.createElement("div");
+btns.className="btn-line";
+btns.appendChild(on);
+btns.appendChild(off);
+
+row.appendChild(label);
+row.appendChild(btns);
+c.appendChild(row);
+});
+
+return c;
+}
+
+/* DROP */
+function createRight(data,top=true){
+let grid=document.createElement("div");
+grid.className="grid";
+
+data.forEach(d=>{
+let col=document.createElement("div");
+col.className="grid-col";
+
+let label=document.createElement("div");
+label.innerText=d.label;
+label.className=top?"label-top":"label-bottom";
+
+let on=document.createElement("button");
+on.innerText="вкл";
+on.dataset.pc = d.on;
+registerButton(on, d.on);
+
+on.onclick=()=>{
+send(d.on);
+setActiveDrop(label);
+setActiveBtn(on,"drop");
+assignSlot(d.label+" (вкл)",d.on);
+};
+
+let off=document.createElement("button");
+off.innerText="выкл";
+off.className="off";
+off.dataset.pc = d.off;
+registerButton(off, d.off);
+
+off.onclick=()=>{
+send(d.off);
+setActiveDrop(label);
+setActiveBtn(off,"drop");
+assignSlot(d.label+" (выкл)",d.off);
+};
+
+if(top){
+col.appendChild(label);
+col.appendChild(on);
+col.appendChild(off);
+}else{
+col.appendChild(on);
+col.appendChild(off);
+col.appendChild(label);
+}
+
+grid.appendChild(col);
+});
+
+return grid;
+}
+
+/* DATA (перевёрнутый harmony) */
+const harmony=[
+{on:20,off:41,label:"-oct/+oct"},
+{on:19,off:40,label:"-5/-4"},
+{on:18,off:39,label:"-4/-3"},
+{on:17,off:38,label:"+5/+7"},
+{on:16,off:37,label:"+5/+6"},
+{on:15,off:36,label:"+4/+5"},
+{on:14,off:35,label:"+3/+4"},
+{on:13,off:34,label:"+b3/+3"},
+{on:12,off:33,label:"+2/+3"},
+{on:11,off:32,label:"shallow"}
+];
+
+const whammy=[{on:0,off:21,label:"+2oct"},{on:1,off:22,label:"+oct"},{on:2,off:23,label:"+5th"},{on:3,off:24,label:"+4th"},{on:4,off:25,label:"-2nd"},{on:5,off:26,label:"-4th"},{on:6,off:27,label:"-5th"},{on:7,off:28,label:"-oct"},{on:8,off:29,label:"-2oct"},{on:9,off:30,label:"dive"},{on:10,off:31,label:"deep"}];
+
+const dropUp=[{on:42,off:60,label:"+1"},{on:43,off:61,label:"+2"},{on:44,off:62,label:"+3"},{on:45,off:63,label:"+4"},{on:46,off:64,label:"+5"},{on:47,off:65,label:"+6"},{on:48,off:66,label:"+7"},{on:49,off:67,label:"+oct"},{on:50,off:68,label:"+oct dry"}];
+
+const dropDown=[{on:59,off:77,label:"-1"},{on:58,off:76,label:"-2"},{on:57,off:75,label:"-3"},{on:56,off:74,label:"-4"},{on:55,off:73,label:"-5"},{on:54,off:72,label:"-6"},{on:53,off:71,label:"-7"},{on:52,off:70,label:"-oct"},{on:51,off:69,label:"-oct dry"}];
+
+/* BUILD */
+document.getElementById("harmony").appendChild(createLeft(harmony));
+document.getElementById("whammy").appendChild(createLeft(whammy));
+document.getElementById("dropUp").appendChild(createRight(dropUp,true));
+document.getElementById("dropDown").appendChild(createRight(dropDown,false));
+
+buildSlots();
+</script>
+
+</body>
+</html>
